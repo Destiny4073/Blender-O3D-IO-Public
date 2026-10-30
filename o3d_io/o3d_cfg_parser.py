@@ -66,7 +66,7 @@ def read_generic_cfg_file(cfg_path):
 
 
 def read_cfg(filepath, override_text_encoding):
-    """
+    r"""
     Reads the CFG file for a mesh and parses relevant information such as materials.
 
     The `cfg_data` dictionary returned is of the following form:
@@ -610,7 +610,9 @@ def write_cfg_materials(f, obj):
             else:
                 if mat.alpha_texture.image is not None:
                     alpha_mode = 2
-                    if mat_blender.blend_method == "CLIP":
+                    # blend_method is deprecated in newer Blender versions, so
+                    # access it defensively
+                    if getattr(mat_blender, "blend_method", None) == "CLIP":
                         alpha_mode = 1
 
                     if mat.alpha_texture.image.filepath != mat.base_color_texture.image.filepath:

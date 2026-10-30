@@ -1,0 +1,35 @@
+schema_version = "1.0.0"
+
+# Blender-O3D-IO — OMSI model/map importer & exporter
+# https://github.com/space928/Blender-O3D-IO-Public
+id = "blender_o3d_io"
+version = "2.2.0"
+name = "Import OMSI map/cfg/sco/o3d files"
+tagline = "Import and export OMSI models, maps, splines and materials"
+maintainer = "Thomas Mathieson"
+type = "add-on"
+
+website = "https://github.com/space928/Blender-O3D-IO-Public"
+
+# Compatible with the Blender extensions platform (4.2+) and the modern
+# Principled BSDF / mesh normals / EEVEE APIs used by this add-on.
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-2.0-or-later",
+]
+
+tags = [
+  "Import-Export",
+]
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  ".*",
+  "*.md",
+  "LICENSE",
+  "*.zip",
+  "blender-o3d-io-logo.png",
+  "o3d_io/dds_loader/test.py",
+]

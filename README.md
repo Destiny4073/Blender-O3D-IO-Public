@@ -1,8 +1,10 @@
 # Blender-O3D-IO
 
-[En Français](README-FR.md) (Merci a [@boingtheboeing](https://github.com/boingtheboeing) pour la traduction)
+A plugin supporting Blender 4.2+ (including 5.x) for importing and exporting OMSI .sco, .cfg, and .o3d files.
 
-A plugin supporting blender 2.79-3.x for importing and exporting OMSI .sco, .cfg, and .o3d files.
+> **Note:** Since Blender 5.0, legacy `bl_info` add-ons are no longer supported; this add-on is packaged as an
+> [extension](https://docs.blender.org/manual/en/latest/advanced/extensions/addons.html) with a
+> `blender_manifest.toml`. Users of Blender 3.x should use release v1.2.3 instead.
 
 ![Blender-O3D-IO-Screenshot](https://user-images.githubusercontent.com/15130114/208222029-5f9c2eb7-1007-4c38-a06a-0f3214d0a2f6.png)
 
@@ -13,12 +15,19 @@ Blender-O3D-IO includes a fast o3d file importer and exporter with full support 
  - Fully supports O3D file format:
     - Explicit vertex normals
     - Long headers (version >= 3)
-    - Encryption (requires private `o3d_crypto.py` module)
-    - Long triangle indices
+    - Encryption/scrambling of version 4+ files (both import and export, ported from the
+      [openOMSI](https://github.com/openOMSI/openOMSI) reference implementation)
+    - Long triangle indices (auto-enabled for meshes with more than 65535 vertices)
     - Alternative encryption seed
     - Embedded materials
     - Bones
     - UV coordinates
+ - Imports and exports DirectX `.x` mesh files (text and binary variants):
+    - Frame hierarchies with `FrameTransformMatrix`
+    - `MeshNormals`, `MeshTextureCoords`, `DeclData` (Direct3D 9 vertex declarations)
+    - Inline and named material references
+    - Uses the plugin's own `.x` importer for `.x` files referenced from cfg/sco files
+      (no third-party importer needed anymore)
  - Supports many features in CFG/SCO files:
     - LODs
     - Imports and exports advanced material features including:
@@ -41,13 +50,18 @@ Blender-O3D-IO includes a fast o3d file importer and exporter with full support 
 ## Installation
 1. Go to the releases page and download the latest release (available 
 [here](https://github.com/space928/Blender-O3D-IO-Public/releases/latest)), it should look like 
-`Blender-O3D-IO-Public-0.2.3.zip`
+`Blender-O3D-IO-Public-2.0.0.zip`
 2. Open Blender go to `Edit->Preferences...`
-3. Go to the `Add-ons` tab and then press `Install...`
-4. Select the **zip** file (do NOT unzip it) and press `Install Add-on`
+3. Go to the `Get Extensions` tab, press the arrow in the top right corner and choose `Install from Disk...`
+4. Select the **zip** file (do NOT unzip it)
 5. You should now be able to import o3d/cfg/sco files from `File->Import->OMSI Model Config (*.cfg, *.sco, *.o3d)`
 6. Map tiles can be imported from `File->Import->OMSI Map Tile (*.map)`
 7. You can export o3d/cfg/sco files from `File->Export->OMSI Model Config (*.cfg, *.sco, *.o3d)`
+
+## Languages
+The UI is available in English and Simplified Chinese (简体中文). The language follows Blender's interface
+language setting (`Edit->Preferences->Interface->Translation`, with "Interface" and "Tooltips" enabled).
+To add another language, extend the dictionary in `o3d_io/translations.py` — pull requests are welcome.
 
 ## Exporter Tips
 OMSI and Blender handle 3D models and materials fairly differently so there are a few areas where the conversion between 

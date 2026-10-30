@@ -14,6 +14,8 @@ if bpy.app.version >= (2, 80):
     # from bpy_extras import node_shader_utils
     from . import o3d_node_shader_utils
 from . import o3dconvert
+from . import io_x_import
+from .o3d_node_shader_utils import set_material_blend_mode
 
 # from . import log
 from mathutils import Matrix, Vector
@@ -120,34 +122,13 @@ def do_import(filepath, context, import_x, override_text_encoding, hide_lods, im
 
             if path_to_file[-1:] == "x":
                 if not import_x:
-                    bpy.ops.object.select_all(action='DESELECT')
                     continue
 
-                # X files are not supported by this importer
+                # X files are imported with the plugin's own DirectX .x importer
                 try:
-                    x_file_path = {"name": os.path.basename(path_to_file)}
-                    # Clunky solution to work out what has been imported because the x importer doesn't set selection
-                    old_objs = set(context.scene.objects)
-                    # For now the x file importer doesn't handle omsi x files very well, materials aren't imported
-                    # correctly
-                    bpy.ops.object.select_all(action='DESELECT')
-                    bpy.ops.import_scene.x(filepath=path_to_file, files=[x_file_path], axis_forward='Y', axis_up='Z',
-                                           use_split_objects=False, use_split_groups=False, parented=False,
-                                           quickmode=True)
-                    # mat_counter = generate_materials(cfg_materials, filepath, mat_counter, materials, mesh,
-                    #                                  object_directory, path_to_file)
-                    new_objs = set(context.scene.objects) - old_objs
-
-                    for o in new_objs:
-                        if current_collection is not None:
-                            if bpy.app.version > (2, 79):
-                                if current_collection != bpy.context.scene.collection:
-                                    bpy.context.scene.collection.objects.unlink(o)
-                                if current_collection in o.users_collection:
-                                    continue
-                            # else:
-                            #     bpy.context.scene.objects.unlink(o)
-                            current_collection.objects.link(o)
+                    new_objs = io_x_import.import_x_file(path_to_file, context,
+                                                         parent_collection=current_collection,
+                                                         split_normals=split_normals, obj_root=obj_root)
 
                     # Create lights
                     create_lights(blender_objs, cfg_data[current_lod]["meshes"][current_mesh], filepath,
@@ -155,8 +136,7 @@ def do_import(filepath, context, import_x, override_text_encoding, hide_lods, im
                     blender_objs.extend(new_objs)
                     continue
                 except Exception as e:
-                    log("WARNING: {0} was not imported! A compatible X importer was not found! Please use: "
-                        "https://github.com/Poikilos/io_import_x\n"
+                    log("WARNING: {0} was not imported! The built-in .x importer failed:\n"
                         "Exception: {1}".format(path_to_file, e))
                     continue
 
@@ -210,7 +190,9 @@ def do_import(filepath, context, import_x, override_text_encoding, hide_lods, im
             #         bpy.data.meshes[mesh.name][prop[0]] = prop[1]
 
             for ind, tri in enumerate(mesh.polygons):
-                tri.material_index = matl_ids[ind]
+                # (mesh.validate() may have removed faces, so guard the index)
+                if ind < len(matl_ids):
+                    tri.material_index = matl_ids[ind]
 
             mesh.update()
 
@@ -444,20 +426,6 @@ def load_o3d(object_directory, path_to_file, split_normals):
 
     mesh = bpy.data.meshes.new(name=path_to_file[len(object_directory):-4])
 
-    vertex_pos = [x[0] for x in verts]
-    normals = [x[1] for x in verts]  # [(x[1][0], x[1][2], x[1][1]) for x in verts]
-    uvs = [(x[2][0], 1 - x[2][1]) for x in verts]
-    face_list = [x[0] for x in faces]
-    matl_ids = [x[1] for x in faces]
-    materials = o3d[3]
-
-    mesh.from_pydata(vertex_pos, edges, face_list)
-
-    if bpy.app.version < (2, 80):
-        mesh.uv_textures.new("UV Map")
-    else:
-        mesh.uv_layers.new(name="UV Map")
-
     axis_conversion_matrix = Matrix((
         (1, 0, 0, 0),
         (0, 0, 1, 0),
@@ -477,31 +445,73 @@ def load_o3d(object_directory, path_to_file, split_normals):
         o3d_transform_matrix = axis_conversion_matrix @ o3d_transform_matrix @ axis_conversion_matrix
         i_o3d_transform_matrix = o3d_transform_matrix.inverted()
         mesh_matrix = i_o3d_transform_matrix @ axis_conversion_matrix
+    normal_mat = axis_conversion_matrix * (1 if mesh_matrix.is_negative else -1)
+    normal_mat = mesh_matrix.to_3x3().normalized()
     # log("Converted matrix: \n{0}".format(o3d_transform_matrix))
     # log("Inverted matrix: \n{0}".format(i_o3d_transform_matrix))
-    # log("Mesh matrix: \n{0}".format(mesh_matrix))
+    # log("Mesh matrix (neg={0}): \n{1}\n{2}".format(mesh_matrix.is_negative, mesh_matrix, normal_mat))
 
-    if split_normals:
-        mesh.create_normals_split()
-        mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
-        mesh.normals_split_custom_set_from_vertices(normals)
-        mesh.use_auto_smooth = True
+    if bpy.app.version < (2, 80):
+        vertex_pos = [mesh_matrix * Vector(x[0]) for x in verts]
+        normals = [normal_mat * Vector(x[1]) for x in verts]  # [(x[1][0], x[1][2], x[1][1]) for x in verts]
     else:
-        mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
+        vertex_pos = [mesh_matrix @ Vector(x[0]) for x in verts]
+        normals = [normal_mat @ Vector(x[1]) for x in verts]  # [(x[1][0], x[1][2], x[1][1]) for x in verts]
+    uvs = [(x[2][0], 1 - x[2][1]) for x in verts]
+    if mesh_matrix.is_negative:
+        face_list = [x[0][::-1] for x in faces]
+    else:
+        face_list = [x[0] for x in faces]
+    # Drop faces naming a vertex the file does not have (a damaged or hand-made file) and
+    # degenerate faces with repeated vertex indices (OMSI models do contain those; they
+    # crash Blender's custom split normals code).
+    n_verts = len(vertex_pos)
+    face_list = [f for f in face_list
+                 if len(f) >= 3 and len(set(f)) == len(f) and all(0 <= i < n_verts for i in f)]
+    matl_ids = [x[1] for x in faces]
+    materials = o3d[3]
+
+    # for v, nt in zip(verts, normals):
+    #     log(f"imp vert p:({v[0][0]:.2f},{v[0][1]:.2f},{v[0][2]:.2f})\t"
+    #         f"n:({v[1][0]:.2f},{v[1][1]:.2f},{v[1][2]:.2f})\t"
+    #         f"nt:({nt[0]:.2f},{nt[1]:.2f},{nt[2]:.2f})\t"
+    #         f"uv:({v[2][0]:.2f},{1-v[2][1]:.2f})\t")
+
+    mesh.from_pydata(vertex_pos, edges, face_list)
+
+    if bpy.app.version < (2, 80):
+        mesh.uv_textures.new("UV Map")
+    else:
+        mesh.uv_layers.new(name="UV Map")
 
     if bpy.app.version < (2, 80):
         mesh.update(calc_tessface=True)
+    else:
+        # Build the edges and validate the mesh *before* setting custom split
+        # normals: Blender's normals code walks edge fans and crashes on
+        # degenerate or unvalidated geometry.
+        mesh.update(calc_edges=True)
+        mesh.validate(verbose=False, clean_customdata=True)
+
+    mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
+    if split_normals:
+        if bpy.app.version >= (4, 1, 0):
+            # create_normals_split() and use_auto_smooth were removed in
+            # Blender 4.1; custom split normals are used automatically once
+            # set.
+            mesh.normals_split_custom_set_from_vertices(normals)
+        else:
+            mesh.create_normals_split()
+            mesh.normals_split_custom_set_from_vertices(normals)
+            mesh.use_auto_smooth = True
+
+    if bpy.app.version < (2, 80):
         mesh.calc_normals_split()
     else:
         mesh.update()
         mesh.calc_loop_triangles()
-        mesh.calc_normals_split()
-
-    mesh.validate(verbose=False, clean_customdata=True)
-
-    mesh.transform(mesh_matrix)
-    if mesh_matrix.is_negative:
-        mesh.flip_normals()
+        if bpy.app.version < (4, 1, 0):
+            mesh.calc_normals_split()
 
     for face in mesh.polygons:
         for vert_idx, loop_idx in zip(face.vertices, face.loop_indices):
@@ -555,8 +565,7 @@ def generate_materials(cfg_materials, cfg_file_path, mat_counter, materials, mes
             mat.specular_tint = 0  # (spec_r, spec_g, spec_b)
 
             mat_blender.use_backface_culling = True
-            mat_blender.blend_method = "HASHED"
-            mat_blender.shadow_method = "HASHED"
+            set_material_blend_mode(mat_blender, "HASHED")
 
         # Load the diffuse texture and assign it to a new texture slot
         diff_tex = load_texture_into_new_slot(cfg_file_path, matl[4], mat)
@@ -581,11 +590,9 @@ def generate_materials(cfg_materials, cfg_file_path, mat_counter, materials, mes
                     else:
                         mat.alpha_texture.image = diff_tex.texture.image
                         if cfg_materials[key]["alpha"][0] == 1:
-                            mat_blender.blend_method = "CLIP"
-                            mat_blender.shadow_method = "CLIP"
+                            set_material_blend_mode(mat_blender, "CLIP")
                         else:
-                            mat_blender.blend_method = "HASHED"
-                            mat_blender.shadow_method = "HASHED"
+                            set_material_blend_mode(mat_blender, "HASHED")
 
                     mat.alpha = 0
 
@@ -606,8 +613,7 @@ def generate_materials(cfg_materials, cfg_file_path, mat_counter, materials, mes
                             trans_map.use_map_color_diffuse = False
                         else:
                             mat.alpha_texture.image = trans_map.texture.image
-                            mat_blender.blend_method = "HASHED"
-                            mat_blender.shadow_method = "HASHED"
+                            set_material_blend_mode(mat_blender, "HASHED")
                     else:
                         mat.alpha = 1
 

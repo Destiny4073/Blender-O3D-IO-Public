@@ -498,8 +498,7 @@ def generate_materials(mesh, sli_path, matls):
             pass
         else:
             mat_blender.use_backface_culling = True
-            mat_blender.blend_method = "HASHED"
-            mat_blender.shadow_method = "HASHED"
+            o3d_node_shader_utils.set_material_blend_mode(mat_blender, "HASHED")
 
         mesh.materials.append(mat_blender)
 

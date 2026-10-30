@@ -11,7 +11,92 @@ from mathutils import Color, Vector
 
 __all__ = (
     "PrincipledBSDFWrapper",
+    "set_material_blend_mode",
 )
+
+
+def log(*args):
+    print("[O3D_ShaderUtils]", *args)
+
+
+# ---------------------------------------------------------------------------
+# Compatibility helpers for the Blender 4.x/5.x API changes.
+# ---------------------------------------------------------------------------
+
+# The Principled BSDF sockets were renamed in Blender 4.0:
+#   Specular -> Specular IOR Level, Emission -> Emission Color,
+#   Transmission -> Transmission Weight.
+# ("Specular Tint" kept its name in all versions.)
+if bpy.app.version >= (4, 0, 0):
+    SOCKETS_SPECULAR = ("Specular IOR Level", "Specular")
+    SOCKETS_EMISSION = ("Emission Color", "Emission")
+    SOCKETS_TRANSMISSION = ("Transmission Weight", "Transmission")
+else:
+    SOCKETS_SPECULAR = ("Specular",)
+    SOCKETS_EMISSION = ("Emission",)
+    SOCKETS_TRANSMISSION = ("Transmission",)
+
+
+def find_socket(sockets, *names):
+    """
+    Returns the first socket in the collection whose name matches one of the
+    given names, or None if no match was found.
+    """
+    for name in names:
+        sock = sockets.get(name)
+        if sock is not None:
+            return sock
+    return None
+
+
+def socket_by_identifier(sockets, *identifiers):
+    """
+    Looks a socket up by its identifier. Needed for the ShaderNodeMix node
+    where several sockets share the same name (eg. 'A') but differ per
+    data_type (eg. 'A_Color').
+    """
+    for identifier in identifiers:
+        for sock in sockets:
+            if sock.identifier == identifier:
+                return sock
+    return None
+
+
+def set_material_blend_mode(mat_blender, mode):
+    """
+    Sets a material's alpha blend mode compatibly across EEVEE (legacy) and
+    EEVEE Next (Blender 4.2+, where shadow_method was removed and
+    surface_render_method was introduced, with blend_method kept for the
+    viewport).
+
+    :param mode: one of 'OPAQUE', 'CLIP', 'HASHED', 'BLEND'
+    """
+    if bpy.app.version >= (4, 2, 0):
+        try:
+            mat_blender.surface_render_method = 'BLENDED' if mode == 'BLEND' else 'DITHERED'
+        except (AttributeError, TypeError):
+            pass
+    try:
+        mat_blender.blend_method = mode
+    except (AttributeError, TypeError):
+        pass
+    if bpy.app.version < (4, 2, 0):
+        try:
+            mat_blender.shadow_method = mode
+        except (AttributeError, TypeError):
+            pass
+
+
+def _set_material_prop_safe(mat_blender, prop, value):
+    """
+    Sets a legacy viewport material property if it still exists in this
+    Blender version (some legacy properties are deprecated and are slated for
+    removal).
+    """
+    try:
+        setattr(mat_blender, prop, value)
+    except (AttributeError, TypeError):
+        pass
 
 
 def _set_check(func):
@@ -287,14 +372,17 @@ class PrincipledBSDFWrapper(ShaderWrapper):
     def specular_get(self):
         if not self.use_nodes or self.node_principled_bsdf is None:
             return self.material.specular_intensity
-        return self.node_principled_bsdf.inputs["Specular"].default_value
+        sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_SPECULAR)
+        return sock.default_value if sock is not None else 0.0
 
     @_set_check
     def specular_set(self, value):
         value = values_clamp(value, 0.0, 1.0)
-        self.material.specular_intensity = value
+        _set_material_prop_safe(self.material, "specular_intensity", value)
         if self.use_nodes and self.node_principled_bsdf is not None:
-            self.node_principled_bsdf.inputs["Specular"].default_value = value
+            sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_SPECULAR)
+            if sock is not None:
+                sock.default_value = value
 
     specular = property(specular_get, specular_set)
 
@@ -307,6 +395,12 @@ class PrincipledBSDFWrapper(ShaderWrapper):
     def specular_tint_set(self, value):
         value = values_clamp(value, 0.0, 1.0)
         if self.use_nodes and self.node_principled_bsdf is not None:
+            # "Specular Tint" is a colour socket; accept both scalars and
+            # rgb(a) tuples.
+            if not hasattr(value, "__iter__"):
+                value = (value, value, value, 1.0)
+            elif len(value) == 3:
+                value = rgb_to_rgba(value)
             self.node_principled_bsdf.inputs["Specular Tint"].default_value = value
 
     specular_tint = property(specular_tint_get, specular_tint_set)
@@ -316,9 +410,12 @@ class PrincipledBSDFWrapper(ShaderWrapper):
         if not self.use_nodes or self.node_principled_bsdf is None:
             print("NO NODES!")
             return None
+        sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_SPECULAR)
+        if sock is None:
+            return None
         return ShaderImageTextureWrapper(
             self, self.node_principled_bsdf,
-            self.node_principled_bsdf.inputs["Specular"],
+            sock,
             grid_row_diff=0,
             colorspace_name='Non-Color',
         )
@@ -336,7 +433,7 @@ class PrincipledBSDFWrapper(ShaderWrapper):
     @_set_check
     def roughness_set(self, value):
         value = values_clamp(value, 0.0, 1.0)
-        self.material.roughness = value
+        _set_material_prop_safe(self.material, "roughness", value)
         if self.use_nodes and self.node_principled_bsdf is not None:
             self.node_principled_bsdf.inputs["Roughness"].default_value = value
 
@@ -366,7 +463,7 @@ class PrincipledBSDFWrapper(ShaderWrapper):
     @_set_check
     def metallic_set(self, value):
         value = values_clamp(value, 0.0, 1.0)
-        self.material.metallic = value
+        _set_material_prop_safe(self.material, "metallic", value)
         if self.use_nodes and self.node_principled_bsdf is not None:
             self.node_principled_bsdf.inputs["Metallic"].default_value = value
 
@@ -417,13 +514,16 @@ class PrincipledBSDFWrapper(ShaderWrapper):
     def transmission_get(self):
         if not self.use_nodes or self.node_principled_bsdf is None:
             return 0.0
-        return self.node_principled_bsdf.inputs["Transmission"].default_value
+        sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_TRANSMISSION)
+        return sock.default_value if sock is not None else 0.0
 
     @_set_check
     def transmission_set(self, value):
         value = values_clamp(value, 0.0, 1.0)
         if self.use_nodes and self.node_principled_bsdf is not None:
-            self.node_principled_bsdf.inputs["Transmission"].default_value = value
+            sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_TRANSMISSION)
+            if sock is not None:
+                sock.default_value = value
 
     transmission = property(transmission_get, transmission_set)
 
@@ -431,9 +531,12 @@ class PrincipledBSDFWrapper(ShaderWrapper):
     def transmission_texture_get(self):
         if not self.use_nodes or self.node_principled_bsdf is None:
             return None
+        sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_TRANSMISSION)
+        if sock is None:
+            return None
         return ShaderImageTextureWrapper(
             self, self.node_principled_bsdf,
-            self.node_principled_bsdf.inputs["Transmission"],
+            sock,
             grid_row_diff=-1,
             colorspace_name='Non-Color',
         )
@@ -473,23 +576,29 @@ class PrincipledBSDFWrapper(ShaderWrapper):
     def emission_color_get(self):
         if not self.use_nodes or self.node_principled_bsdf is None:
             return Color((0.0, 0.0, 0.0))
-        return rgba_to_rgb(self.node_principled_bsdf.inputs["Emission"].default_value)
+        sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_EMISSION)
+        return rgba_to_rgb(sock.default_value) if sock is not None else Color((0.0, 0.0, 0.0))
 
     @_set_check
     def emission_color_set(self, color):
         if self.use_nodes and self.node_principled_bsdf is not None:
             color = values_clamp(color, 0.0, 1000000.0)
             color = rgb_to_rgba(color)
-            self.node_principled_bsdf.inputs["Emission"].default_value = color
+            sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_EMISSION)
+            if sock is not None:
+                sock.default_value = color
 
     emission_color = property(emission_color_get, emission_color_set)
 
     def emission_color_texture_get(self):
         if not self.use_nodes or self.node_principled_bsdf is None:
             return None
+        sock = find_socket(self.node_principled_bsdf.inputs, *SOCKETS_EMISSION)
+        if sock is None:
+            return None
         return ShaderImageTextureWrapper(
             self, self.node_principled_bsdf,
-            self.node_principled_bsdf.inputs["Emission"],
+            sock,
             grid_row_diff=1,
         )
 
@@ -681,7 +790,7 @@ class ShaderImageTextureWrapper():
 
             tree.links.new(node_image.outputs["Alpha" if self.use_alpha else "Color"], self.socket_dst)
             if self.use_alpha:
-                self.owner_shader.material.blend_method = 'BLEND'
+                set_material_blend_mode(self.owner_shader.material, 'BLEND')
 
             self._node_image = node_image
         return self._node_image
@@ -860,6 +969,24 @@ class LayeredBSDFWrapper(PrincipledBSDFWrapper):
     """Tuple of ShaderImageTextureWrappers"""
     base_color_textures = property(base_color_textures_get)
 
+    @staticmethod
+    def _mix_node_sockets(node_mix):
+        """
+        Returns the (fac, a, b, out) sockets of a mix node, handling both the
+        legacy ShaderNodeMixRGB and the ShaderNodeMix node which replaced it
+        (the generic Mix node has multiple sockets sharing the same name, so
+        the colour sockets must be looked up by identifier).
+        """
+        if node_mix.bl_idname == 'ShaderNodeMix':
+            node_mix.data_type = 'RGBA'
+            fac = socket_by_identifier(node_mix.inputs, "Factor_Float", "Factor")
+            a = socket_by_identifier(node_mix.inputs, "A_Color")
+            b = socket_by_identifier(node_mix.inputs, "B_Color")
+            out = socket_by_identifier(node_mix.outputs, "Result_Color")
+            return fac, a, b, out
+        else:
+            return node_mix.inputs["Fac"], node_mix.inputs["Color1"], node_mix.inputs["Color2"], node_mix.outputs["Color"]
+
     def base_color_n_textures_set(self, n):
         tree = self.material.node_tree
         if n < len(self._base_color_textures):
@@ -880,34 +1007,41 @@ class LayeredBSDFWrapper(PrincipledBSDFWrapper):
                     col_image,
                     ShaderImageTextureWrapper(
                         self, node_mix,
-                        node_mix.inputs["Fac"],
+                        self._mix_node_sockets(node_mix)[0],
                         grid_row_diff=2,
                     )
                 )
 
             # Create new textures
             for x in range(len(self._base_color_textures), n):
-                node_mix = tree.nodes.new(type='ShaderNodeMixRGB')
+                # Note: the legacy ShaderNodeMixRGB node can no longer be
+                # created from the Python API in recent Blender versions, so
+                # the generic ShaderNodeMix node is used instead.
+                node_mix = tree.nodes.new(type='ShaderNodeMix')
+                node_mix.blend_type = 'MIX'
+                fac_sock, a_sock, b_sock, out_sock = self._mix_node_sockets(node_mix)
                 self._grid_to_location(
                     -2, 0,
                     dst_node=node_mix, ref_node=self._mix_node_links[-1],
                 )
 
-                tree.links.new(node_mix.outputs["Color"],
-                               self._mix_node_links[-1].inputs["Color1" if len(self._mix_node_links) > 1 else
-                               "Base Color"])
+                prev_node = self._mix_node_links[-1]
+                if prev_node.bl_idname == 'ShaderNodeBsdfPrincipled':
+                    tree.links.new(out_sock, find_socket(prev_node.inputs, "Base Color"))
+                else:
+                    tree.links.new(out_sock, self._mix_node_sockets(prev_node)[1])
 
-                node_mix.inputs["Fac"].default_value = 1
+                fac_sock.default_value = 1
 
                 self._base_color_textures.append((
                     ShaderImageTextureWrapper(
                         self, node_mix,
-                        node_mix.inputs["Color2"],
+                        b_sock,
                         grid_row_diff=1,
                     ),
                     ShaderImageTextureWrapper(
                         self, node_mix,
-                        node_mix.inputs["Fac"],
+                        fac_sock,
                         grid_row_diff=2,
                     ) if x < n-1 else None  # Don't create a splat map for the last texture
                 ))
@@ -935,7 +1069,6 @@ def generate_solid_material(diffuse, spec=(0, 0, 0), roughness=1):
         mat.alpha = diffuse[3]
 
         mat_blender.use_backface_culling = True
-        mat_blender.blend_method = "HASHED"
-        mat_blender.shadow_method = "HASHED"
+        set_material_blend_mode(mat_blender, "HASHED")
 
     return mat_blender

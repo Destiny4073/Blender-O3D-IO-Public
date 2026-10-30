@@ -17,6 +17,7 @@ from bpy.props import (BoolProperty,
                        )
 
 import mathutils
+from bpy.app.translations import pgettext
 from . import io_omsi_spline, o3d_node_shader_utils
 from .o3d_cfg_parser import read_generic_cfg_file
 
@@ -26,31 +27,30 @@ def log(*args):
 
 
 class OMSIMapProps(bpy.types.PropertyGroup):
-    bl_idname = "propgroup.OMSIMapProps"
-    map_path = bpy.props.StringProperty(name="", subtype="FILE_PATH")
-    centre_x = bpy.props.IntProperty(name="Centre Tile X", default=0)
-    centre_y = bpy.props.IntProperty(name="Centre Tile Y", default=0)
-    load_radius = bpy.props.IntProperty(name="Load Radius", default=999999, min=1)
-    import_scos = BoolProperty(name="Import SCOs", default=True)
-    import_x = BoolProperty(
+    map_path: bpy.props.StringProperty(name="", subtype="FILE_PATH")
+    centre_x: bpy.props.IntProperty(name="Centre Tile X", default=0)
+    centre_y: bpy.props.IntProperty(name="Centre Tile Y", default=0)
+    load_radius: bpy.props.IntProperty(name="Load Radius", default=999999, min=1)
+    import_scos: BoolProperty(name="Import SCOs", default=True)
+    import_x: BoolProperty(
         name="Import .x Files",
         description="Attempt to import .x files, this can be buggy and only works if you have the correct .x importer "
                     "already installed.",
         default=True,
     )
-    import_splines = BoolProperty(
+    import_splines: BoolProperty(
         name="Import Splines",
         description="Import the map's splines",
         default=False
     )
-    spline_tess_dist = FloatProperty(
+    spline_tess_dist: FloatProperty(
         name="Spline Tesselation Precision",
         description="The minimum distance between spline segments",
         min=0.1,
         max=1000.0,
         default=6.0,
     )
-    spline_curve_sag = FloatProperty(
+    spline_curve_sag: FloatProperty(
         name="Spline Tesselation Curve Precision",
         description="The minimum sag distance between the curve and the tessellated segment. Note that this is used in "
                     "combination with the above setting, whichever is lower is used by the tessellator.",
@@ -58,7 +58,7 @@ class OMSIMapProps(bpy.types.PropertyGroup):
         max=1.0,
         default=0.005,
     )
-    spline_preview_quality = FloatProperty(
+    spline_preview_quality: FloatProperty(
         name="Spline Preview Quality",
         min=0.01,
         max=10.0,
@@ -72,50 +72,50 @@ class GenerateMapPreviewOp(bpy.types.Operator):
     bl_label = "Import OMSI global.cfg"
     bl_options = {'PRESET', 'UNDO'}
 
-    filepath = StringProperty(
+    filepath: StringProperty(
         name="File Path"
     )
 
-    import_scos = BoolProperty(
+    import_scos: BoolProperty(
         name="Import SCOs",
         description="Import the SCO files",
         default=False
     )
 
-    import_splines = BoolProperty(
+    import_splines: BoolProperty(
         name="Import Splines",
         description="Import the map's splines",
         default=False
     )
 
-    roadmap_mode = BoolProperty(
+    roadmap_mode: BoolProperty(
         name="Roadmap Mode",
         description="Imports trees, water and full quality splines for roadmap rendering",
         default=False
     )
 
-    spline_preview_quality = FloatProperty(
+    spline_preview_quality: FloatProperty(
         name="Spline Preview Quality",
         min=0.01,
         max=20
     )
 
-    clear = BoolProperty(
+    clear: BoolProperty(
         name="Clear Preview",
         default=False
     )
 
-    centre_x = IntProperty(
+    centre_x: IntProperty(
         name="Centre Tile X",
         description="When loading a global.cfg file, the x coordinate of the first tile to load.",
         default=0
     )
-    centre_y = IntProperty(
+    centre_y: IntProperty(
         name="Centre Tile Y",
         description="When loading a global.cfg file, the y coordinate of the first tile to load.",
         default=0
     )
-    load_radius = IntProperty(
+    load_radius: IntProperty(
         name="Load Radius",
         description="When loading a global.cfg file, how many tiles around the centre tile to load. Set to 0 to only "
                     "load the centre tile, 1 loads the centre tile and it's 4 neighbours, 2 loads the centre tile and "
@@ -190,8 +190,14 @@ class GenerateMapPreviewOp(bpy.types.Operator):
 
             cams.append(camera_obj)
 
-            rv = bpy.context.scene.render.views.new("map_cam-{0}".format(tile_coord))
-            rv.camera_suffix = "{0}".format(tile_coord)
+            # NOTE: The legacy multiview API was reworked in Blender 5.0, so
+            # tolerate it being unavailable.
+            try:
+                rv = bpy.context.scene.render.views.new("map_cam-{0}".format(tile_coord))
+                rv.camera_suffix = "{0}".format(tile_coord)
+            except (AttributeError, RuntimeError) as e:
+                log("WARNING: Couldn't create a render view for camera "
+                    "map_cam-{0}: {1}".format(tile_coord, e))
 
         return cams
 
@@ -399,16 +405,16 @@ class ImportMapCFGPanel(bpy.types.Panel):
 
     def draw(self, context):
         self.layout.label(
-            text="Tile coords x: " + (str(int(bpy.context.active_object.location[0]//300))
-                                      if bpy.context.active_object else "N/A") +
-                 " y: " + (str(int(bpy.context.active_object.location[1]//300))
-                           if bpy.context.active_object else "N/A"))
+            text=pgettext("Tile coords x: ") + (str(int(bpy.context.active_object.location[0]//300))
+                                      if bpy.context.active_object else pgettext("N/A")) +
+                 pgettext(" y: ") + (str(int(bpy.context.active_object.location[1]//300))
+                           if bpy.context.active_object else pgettext("N/A")))
 
         self.layout.separator()
         col_props = self.layout.column(align=True)
 
         layout_row = col_props.row(align=True)
-        layout_row.label(text="Map Path:")
+        layout_row.label(text=pgettext("Map Path:"))
         layout_row.prop(context.scene.omsi_map_data, "map_path")
 
         col_props.separator()
@@ -425,7 +431,7 @@ class ImportMapCFGPanel(bpy.types.Panel):
 
         col_props.separator()
         layout_row = col_props.row(align=True)
-        op = layout_row.operator(GenerateMapPreviewOp.bl_idname, text="Preview map", icon="PLUS")
+        op = layout_row.operator(GenerateMapPreviewOp.bl_idname, text=pgettext("Preview map"), icon="PLUS")
         op.filepath = context.scene.omsi_map_data.map_path
         op.centre_x = context.scene.omsi_map_data.centre_x
         op.centre_y = context.scene.omsi_map_data.centre_y
@@ -434,10 +440,10 @@ class ImportMapCFGPanel(bpy.types.Panel):
         op.import_splines = context.scene.omsi_map_data.import_splines
         op.spline_preview_quality = context.scene.omsi_map_data.spline_preview_quality
         op.clear = False
-        op = layout_row.operator(GenerateMapPreviewOp.bl_idname, text="Clear map preview", icon="CANCEL")
+        op = layout_row.operator(GenerateMapPreviewOp.bl_idname, text=pgettext("Clear map preview"), icon="CANCEL")
         op.clear = True
 
-        op = col_props.operator(GenerateMapPreviewOp.bl_idname, text="Load for roadmap", icon="WORLD")
+        op = col_props.operator(GenerateMapPreviewOp.bl_idname, text=pgettext("Load for roadmap"), icon="WORLD")
         op.roadmap_mode = True
         op.filepath = context.scene.omsi_map_data.map_path
         op.centre_x = context.scene.omsi_map_data.centre_x
@@ -450,7 +456,7 @@ class ImportMapCFGPanel(bpy.types.Panel):
 
         self.layout.separator()
         col = self.layout.row(align=True)
-        op = col.operator("import_scene.omsi_tile", text="Load tiles", icon="PLUS")
+        op = col.operator("import_scene.omsi_tile", text=pgettext("Load tiles"), icon="PLUS")
         op.filepath = context.scene.omsi_map_data.map_path
         op.centre_x = context.scene.omsi_map_data.centre_x
         op.centre_y = context.scene.omsi_map_data.centre_y

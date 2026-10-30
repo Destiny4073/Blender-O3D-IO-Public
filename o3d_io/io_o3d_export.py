@@ -9,7 +9,7 @@ import numpy as np
 
 import bmesh
 import bpy
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 from . import o3d_cfg_parser, o3dconvert
 
 if not (bpy.app.version[0] < 3 and bpy.app.version[1] < 80):
@@ -20,7 +20,8 @@ def log(*args):
     print("[O3D_Export]", *args)
 
 
-def export_mesh(filepath, context, blender_obj, mesh, transform_matrix, materials, o3d_version, export_custom_normals):
+def export_mesh(filepath, context, blender_obj, mesh, mesh_matrix, transform_matrix, materials,
+                o3d_version, export_custom_normals, encrypt=False):
     # Create o3d file
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "wb") as f:
@@ -36,8 +37,15 @@ def export_mesh(filepath, context, blender_obj, mesh, transform_matrix, material
         vert_map = {}
         vert_count = 0
 
-        if bpy.app.version < (2, 80):
+        normal_mat = mesh_matrix.to_3x3().normalized()
+        log(normal_mat)
+
+        if bpy.app.version < (4, 1, 0):
+            if not export_custom_normals:
+                mesh.free_normals_split()
             mesh.calc_normals_split()
+
+        if bpy.app.version < (2, 80):
             mesh.calc_tessface()
             uv_layer = mesh.tessface_uv_textures.active
             for face in mesh.tessfaces:
@@ -45,8 +53,8 @@ def export_mesh(filepath, context, blender_obj, mesh, transform_matrix, material
 
                 face_len = len(face.vertices)
                 for i in range(face_len):
-                    v_co = mesh.vertices[face.vertices[i]].co[:]
-                    v_nrm = face.split_normals[i][:]
+                    v_co = (mesh_matrix * mesh.vertices[face.vertices[i]].co).to_tuple()
+                    v_nrm = (normal_mat * Vector(face.split_normals[i])).to_tuple()
                     if uv_layer is not None:
                         v_uv = uv_layer.data[face.index].uv[i][:]
                     else:
@@ -77,32 +85,46 @@ def export_mesh(filepath, context, blender_obj, mesh, transform_matrix, material
                     tris.append((face_inds[1], face_inds[3], face_inds[2], face.material_index))
         else:
             mesh.calc_loop_triangles()
-            if export_custom_normals and mesh.has_custom_normals:
-                # mesh.polygons.foreach_set("use_smooth", [False] * len(mesh.polygons))
-                mesh.use_auto_smooth = True
-            else:
-                mesh.free_normals_split()
-            mesh.calc_normals_split()
+            # In Blender 4.1+ custom split normals can no longer be "freed";
+            # when the user asked not to export them, fall back to the plain
+            # vertex normals instead.
+            use_vertex_normals = not export_custom_normals and bpy.app.version >= (4, 1, 0)
             for tri_loop in mesh.loop_triangles:
                 tri = []
                 tris.append(tri)
 
                 for tri_vert, loop, normal in zip(tri_loop.vertices, tri_loop.loops, tri_loop.split_normals):
                     vert = mesh.vertices[tri_vert]
-                    v_co = vert.co[:]
-                    v_nrm = mesh.loops[loop].normal[:]
+                    v_co = (mesh_matrix @ vert.co).to_tuple()
+                    v_nrm = (normal_mat @ (vert.normal if use_vertex_normals else Vector(normal))).to_tuple()
                     if uv_layer is not None:
                         v_uv = uv_layer[loop].uv[:2]
                     else:
                         v_uv = (0, 0)
 
                     if (v_co, v_nrm, v_uv) in vert_map:
+                        # log(f"exp vert p:({v_co[0]:.2f},{v_co[1]:.2f},{v_co[2]:.2f})\t"
+                        #     f"n:({v_nrm[0]:.2f},{v_nrm[1]:.2f},{v_nrm[2]:.2f})\t"
+                        #     f"no:({normal[0]:.2f},{normal[1]:.2f},{normal[2]:.2f})\t"
+                        #     # f"ns:({-normal[0]:.2f},{-normal[1]:.2f},{-normal[2]:.2f})\t"
+                        #     # f"nv:({-vert.normal[0]:.2f},{-vert.normal[1]:.2f},{-vert.normal[2]:.2f})\t"
+                        #     # f"nt:({-tri_loop.normal[0]:.2f},{-tri_loop.normal[1]:.2f},{-tri_loop.normal[2]:.2f})"
+                        #     # f"uv:({v_uv[0]:.2f},{v_uv[1]:.2f})"
+                        #     f"   duplicate of:{vert_map[(v_co, v_nrm, v_uv)]}")
                         tri.append(vert_map[(v_co, v_nrm, v_uv)])
                     else:
+                        # log(f"exp vert p:({v_co[0]:.2f},{v_co[1]:.2f},{v_co[2]:.2f})\t"
+                        #     f"n:({v_nrm[0]:.2f},{v_nrm[1]:.2f},{v_nrm[2]:.2f})\t"
+                        #     f"no:({normal[0]:.2f},{normal[1]:.2f},{normal[2]:.2f})\t"
+                        #     # f"ns:({-normal[0]:.2f},{-normal[1]:.2f},{-normal[2]:.2f})\t"
+                        #     # f"nv:({-vert.normal[0]:.2f},{-vert.normal[1]:.2f},{-vert.normal[2]:.2f})\t"
+                        #     # f"nt:({-tri_loop.normal[0]:.2f},{-tri_loop.normal[1]:.2f},{-tri_loop.normal[2]:.2f})"
+                        #     # f"uv:({v_uv[0]:.2f},{v_uv[1]:.2f})"
+                        #     f"   id=:{vert_count}")
                         vert_map[(v_co, v_nrm, v_uv)] = vert_count
                         verts.append(
                             [v_co[0], v_co[1], v_co[2],
-                             -v_nrm[0], -v_nrm[1], -v_nrm[2],
+                             v_nrm[0], v_nrm[1], v_nrm[2],
                              v_uv[0], 1 - v_uv[1]])
                         tri.append(vert_count)
                         vert_count += 1
@@ -146,6 +168,12 @@ def export_mesh(filepath, context, blender_obj, mesh, transform_matrix, material
                 else:
                     o3d_mat.append("")
 
+        # Create a default material if the object has no materials
+        if len(o3d_mats) == 0:
+            o3d_mats.append((
+                1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, ""
+            ))
+
         # Construct bones
         bones = []
         for v_group in blender_obj.vertex_groups:
@@ -157,20 +185,25 @@ def export_mesh(filepath, context, blender_obj, mesh, transform_matrix, material
                 except Exception as e:
                     pass
 
+        # Files with more than 65535 vertices need 32 bit triangle indices
+        long_triangle_indices = len(verts) > 65535 and o3d_version >= 3
         o3dconvert.export_o3d(f, verts, tris, o3d_mats, bones, transform_matrix,
                               version=o3d_version,
-                              encrypted=False, encryption_key=0x0,
-                              long_triangle_indices=False,
+                              encrypted=encrypt, encryption_key=0x0,
+                              long_triangle_indices=long_triangle_indices,
                               alt_encryption_seed=True,
-                              invert_triangle_winding=True)
+                              invert_triangle_winding=mesh_matrix.is_negative)
 
 
-def do_export(filepath, context, global_matrix, use_selection, o3d_version, export_custom_normals=True):
+def do_export(filepath, context, global_matrix, use_selection, o3d_version, export_custom_normals=True,
+              encrypt=False):
     """
     Exports the selected CFG/SCO/O3D file
+    :param export_custom_normals: whether custom split normals should be exported
     :param o3d_version: O3D version to export the file as
     :param use_selection: export only the selected objects
     :param global_matrix: transformation matrix to apply before export
+    :param encrypt: whether the vertex data should be encrypted (scrambled)
     :param filepath: the path to the file to import
     :param context: blender context
     :return: success message
@@ -197,6 +230,13 @@ def do_export(filepath, context, global_matrix, use_selection, o3d_version, expo
     if filepath[-3:] == "o3d":
         single_o3d = True
 
+    axis_conversion_matrix = Matrix((
+        (1, 0, 0, 0),
+        (0, 0, 1, 0),
+        (0, 1, 0, 0),
+        (0, 0, 0, 1)
+    ))
+
     index = 0
     exported_paths = set()
     for ob in obs:
@@ -222,30 +262,20 @@ def do_export(filepath, context, global_matrix, use_selection, o3d_version, expo
             except RuntimeError:
                 continue
 
-        axis_conversion_matrix = Matrix((
-            (1, 0, 0, 0),
-            (0, 0, 1, 0),
-            (0, 1, 0, 0),
-            (0, 0, 0, 1)
-        ))
-
         if bpy.app.version < (2, 80):
             o3d_matrix = axis_conversion_matrix * ob.matrix_world * axis_conversion_matrix
+            mesh_matrix = axis_conversion_matrix * ob.matrix_world
+            if global_matrix is not None:
+                mesh_matrix = global_matrix * mesh_matrix
         else:
             o3d_matrix = axis_conversion_matrix @ ob.matrix_world @ axis_conversion_matrix
+            mesh_matrix = axis_conversion_matrix @ ob.matrix_world
+            if global_matrix is not None:
+                mesh_matrix = global_matrix @ mesh_matrix
         o3d_matrix.transpose()
-        me.transform(ob.matrix_world)
-        me.transform(axis_conversion_matrix)
-        if ob.matrix_world.is_negative:
-            me.flip_normals()
-
-        log("Exported matrix: \n{0}".format(o3d_matrix))
 
         bm = bmesh.new()
         bm.from_mesh(me)
-
-        if global_matrix is not None:
-            bm.transform(global_matrix)
 
         if bpy.app.version[0] < 3 and bpy.app.version[1] < 80:
             bmesh.ops.triangulate(bm, faces=bm.faces[:], quad_method=0, ngon_method=0)
@@ -254,8 +284,6 @@ def do_export(filepath, context, global_matrix, use_selection, o3d_version, expo
 
         bm.to_mesh(me)
         bm.free()
-
-        me.calc_normals_split()
 
         # Export individual model
         if "export_path" in ob:
@@ -272,8 +300,9 @@ def do_export(filepath, context, global_matrix, use_selection, o3d_version, expo
         # Export the mesh if it hasn't already been exported
         if path not in exported_paths:
             exported_paths.add(path)
-            export_mesh(path, context, ob_eval, me, [x for y in o3d_matrix for x in y], ob_eval.material_slots,
-                        o3d_version, export_custom_normals)
+            export_mesh(path, context, ob_eval, me, mesh_matrix,
+                        [x for y in o3d_matrix for x in y], ob_eval.material_slots, o3d_version,
+                        export_custom_normals, encrypt)
 
         index += 1
 
